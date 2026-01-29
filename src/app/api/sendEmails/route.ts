@@ -2,7 +2,7 @@ import nodemailer from "nodemailer";
 import type { Attachment } from "nodemailer/lib/mailer";
 import { NextResponse, NextRequest } from "next/server";
 import { OutputData } from '@editorjs/editorjs';
-import { convertToHtml } from "@/utils/editorjsParser";
+import { convertToHtml, convertToText } from "@/utils/editorjsParser";
 
 interface Recipient {
   name: string;
@@ -115,8 +115,9 @@ export async function POST(req: NextRequest) {
     );
   }
   
-  // Convert to HTML
+  // Convert to HTML and plain text
   const htmlContent = convertToHtml(editorData);
+  const textContent = convertToText(editorData);
 
   // Determine SMTP host based on email provider
   const host =
@@ -141,6 +142,9 @@ export async function POST(req: NextRequest) {
   });
 
   const MAX_RETRIES = 3;
+  const MIN_INTERVAL_MS = 12000; // 5 emails per minute
+
+  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   // Create a ReadableStream to send progress
   const encoder = new TextEncoder();
@@ -152,6 +156,8 @@ export async function POST(req: NextRequest) {
         let sent = 0;
         let failed = 0;
         const failedEmails: string[] = [];
+
+        let lastAttemptAt = 0;
 
         for (let i = 0; i < recipients.length; i++) {
           const recipient = recipients[i];
@@ -178,6 +184,10 @@ export async function POST(req: NextRequest) {
             from: resolvedSenderEmail,
             to: recipient.email,
             subject,
+            replyTo: resolvedSenderEmail,
+            text: useGreeting
+              ? `Dear ${recipient.name},\n\n${textContent}`
+              : textContent,
             html: useGreeting
               ? `<p>Dear ${recipient.name},</p>${htmlContent}`
               : htmlContent,
@@ -190,6 +200,12 @@ export async function POST(req: NextRequest) {
 
           while (attempt < MAX_RETRIES && !success) {
             try {
+              const now = Date.now();
+              const waitFor = Math.max(0, lastAttemptAt + MIN_INTERVAL_MS - now);
+              if (waitFor > 0) {
+                await delay(waitFor);
+              }
+              lastAttemptAt = Date.now();
               await transporter.sendMail(mailOptions);
               sent += 1;
               success = true;
@@ -223,18 +239,8 @@ export async function POST(req: NextRequest) {
                   )
                 );
               }
-              // Wait before retrying
-              await new Promise((resolve) => setTimeout(resolve, 2000));
-            }
-          }
-
-          // Throttle to 20 emails per minute (3000 ms delay after every email)
-          if (i < recipients.length - 1) {
-            if ((i + 1) % 20 === 0) {
-              console.log("Waiting for 1 minute to send the next batch...");
-              await new Promise((resolve) => setTimeout(resolve, 60000)); // 1-minute delay every 20 emails
-            } else {
-              await new Promise((resolve) => setTimeout(resolve, 3000)); // 3-second delay between each email
+              // Wait before retrying (also respects the global rate limit)
+              await delay(2000);
             }
           }
         }

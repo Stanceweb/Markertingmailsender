@@ -4,7 +4,7 @@
 import { useState, useRef, useEffect } from "react";
 import EditorJS from "@editorjs/editorjs";
 import { motion } from "framer-motion";
-import { Trash2, Eye, EyeOff, Upload, Send, Plus } from "lucide-react";
+import { Trash2, Eye, EyeOff, Upload, Send, Plus, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -56,6 +56,9 @@ export default function EmailCampaignTool() {
   const [subjectHistory, setSubjectHistory] = useState<string[]>([]);
   const [recipientNameHistory, setRecipientNameHistory] = useState<string[]>([]);
   const [recipientEmailHistory, setRecipientEmailHistory] = useState<string[]>([]);
+  const [sendStatusList, setSendStatusList] = useState<
+    { email: string; status: "success" | "error" }[]
+  >([]);
 
   const editorRef = useRef<EditorJS | null>(null);
 
@@ -248,6 +251,21 @@ export default function EmailCampaignTool() {
     });
   };
 
+  const resetForm = () => {
+    setSenderEmail("");
+    setSenderPassword("");
+    setSubject("");
+    setText("");
+    setRecipients([{ name: "", email: "" }]);
+    setProgress(0);
+    setSentCount(0);
+    setFailedCount(0);
+    setTotalCount(0);
+    setFailedEmails([]);
+    setSendStatusList([]);
+    editorRef.current?.clear();
+  };
+
   const sendEmails = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSending(true);
@@ -257,6 +275,7 @@ export default function EmailCampaignTool() {
     setFailedCount(0);
     setFailedEmails([]);
     setTotalCount(recipients.length);
+    setSendStatusList([]);
 
     try {
       const trimmedSenderEmail = senderEmail.trim();
@@ -311,10 +330,36 @@ export default function EmailCampaignTool() {
               const data = JSON.parse(line);
               if (data.status === "success") {
                 setSentCount((prev) => prev + 1);
+                setSendStatusList((prev) => {
+                  const next = [...prev];
+                  const existingIndex = next.findIndex(
+                    (item) => item.email === data.email
+                  );
+                  const entry = { email: data.email, status: "success" as const };
+                  if (existingIndex >= 0) {
+                    next[existingIndex] = entry;
+                  } else {
+                    next.push(entry);
+                  }
+                  return next;
+                });
                 toast.success(`Email sent to ${data.email}`);
               } else if (data.status === "error") {
                 setFailedCount((prev) => prev + 1);
                 setFailedEmails((prev) => [...prev, data.email]);
+                setSendStatusList((prev) => {
+                  const next = [...prev];
+                  const existingIndex = next.findIndex(
+                    (item) => item.email === data.email
+                  );
+                  const entry = { email: data.email, status: "error" as const };
+                  if (existingIndex >= 0) {
+                    next[existingIndex] = entry;
+                  } else {
+                    next.push(entry);
+                  }
+                  return next;
+                });
                 toast.error(`Failed to send to ${data.email}: ${data.error}`);
               } else if (data.status === "complete") {
                 setProgress(100);
@@ -332,12 +377,6 @@ export default function EmailCampaignTool() {
                     `Failed to send emails to: ${data.failedEmails.join(", ")}`
                   );
                 }
-                setSenderEmail("");
-                setSenderPassword("");
-                setSubject("");
-                setText("");
-                setRecipients([{ name: "", email: "" }]);
-                editorRef.current?.clear();
               }
 
               if (typeof data.sent === "number" && typeof data.total === "number") {
@@ -595,31 +634,56 @@ export default function EmailCampaignTool() {
           </datalist>
         </CardContent>
         <CardFooter className="flex flex-col space-y-4">
-          {isSending && (
+          {(isSending || sendStatusList.length > 0) && (
             <div className="w-full space-y-2">
               <Progress value={progress} className="w-full" />
               <div className="text-sm text-muted-foreground text-center">
                 Sent: {sentCount} | Failed: {failedCount} | Total: {totalCount}
               </div>
+              {sendStatusList.length > 0 && (
+                <ul className="space-y-1 text-sm">
+                  {sendStatusList.map((item) => (
+                    <li key={item.email} className="flex items-center gap-2">
+                      {item.status === "success" ? (
+                        <Check className="h-4 w-4 text-blue-600" />
+                      ) : (
+                        <X className="h-4 w-4 text-red-500" />
+                      )}
+                      <span className="break-all">{item.email}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
-          <Button
-            type="submit"
-            form="emailCampaignForm"
-            className="w-full"
-            disabled={isSending}
-          >
-            {isSending ? (
-              <motion.div
-                animate={{ rotate: 360 }}
-                transition={{ repeat: Infinity, duration: 1 }}
-                className="w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"
-              />
-            ) : (
-              <Send className="h-4 w-4 mr-2" />
-            )}
-            {isSending ? "Sending..." : "Send Campaign"}
-          </Button>
+          <div className="flex w-full flex-col gap-2 sm:flex-row">
+            <Button
+              type="submit"
+              form="emailCampaignForm"
+              className="w-full"
+              disabled={isSending}
+            >
+              {isSending ? (
+                <motion.div
+                  animate={{ rotate: 360 }}
+                  transition={{ repeat: Infinity, duration: 1 }}
+                  className="w-4 h-4 border-2 border-current border-t-transparent rounded-full mr-2"
+                />
+              ) : (
+                <Send className="h-4 w-4 mr-2" />
+              )}
+              {isSending ? "Sending..." : "Send Campaign"}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full"
+              disabled={isSending}
+              onClick={resetForm}
+            >
+              Reset
+            </Button>
+          </div>
         </CardFooter>
       </Card>
       <ToastContainer position="bottom-right" />
