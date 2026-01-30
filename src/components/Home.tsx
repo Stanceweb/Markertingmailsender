@@ -40,7 +40,7 @@ export default function EmailCampaignTool() {
   const [isSending, setIsSending] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [emailProvider, setEmailProvider] = useState<
-    "gmail" | "outlook" | "improvemx"
+    "gmail" | "outlook" | "improvemx" | "resend"
   >(
     "improvemx"
   );
@@ -59,8 +59,44 @@ export default function EmailCampaignTool() {
   const [sendStatusList, setSendStatusList] = useState<
     { email: string; status: "success" | "error" }[]
   >([]);
+  const [rememberMe, setRememberMe] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  const CREDENTIALS_KEY = "email_campaign_credentials";
 
   const editorRef = useRef<EditorJS | null>(null);
+
+  useEffect(() => {
+    const saved = localStorage.getItem(CREDENTIALS_KEY);
+    if (saved) {
+      try {
+        const { email, password, provider, remember } = JSON.parse(saved);
+        if (remember) {
+          setSenderEmail(email || "");
+          setSenderPassword(password || "");
+          setEmailProvider(provider || "improvemx");
+          setRememberMe(true);
+        }
+      } catch (e) {
+        console.error("Failed to parse credentials", e);
+      }
+    }
+    setIsLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isLoaded) return;
+    if (rememberMe) {
+        localStorage.setItem(CREDENTIALS_KEY, JSON.stringify({
+            email: senderEmail,
+            password: senderPassword,
+            provider: emailProvider,
+            remember: true
+        }));
+    } else {
+        localStorage.removeItem(CREDENTIALS_KEY);
+    }
+  }, [senderEmail, senderPassword, emailProvider, rememberMe, isLoaded]);
 
   const HISTORY_LIMIT = 10;
   const HISTORY_KEYS = {
@@ -280,8 +316,15 @@ export default function EmailCampaignTool() {
     try {
       const trimmedSenderEmail = senderEmail.trim();
       const trimmedSenderPassword = senderPassword.trim();
-      if (!trimmedSenderEmail || !trimmedSenderPassword) {
-        throw new Error("Enter your SMTP username and password to send.");
+      if (!trimmedSenderEmail) {
+        throw new Error("Enter your sender email to send.");
+      }
+      if (!trimmedSenderPassword) {
+        throw new Error(
+          emailProvider === "resend"
+            ? "Enter your Resend API Key."
+            : "Enter your SMTP username and password to send."
+        );
       }
 
       const response = await fetch("/api/sendEmails", {
@@ -427,6 +470,8 @@ export default function EmailCampaignTool() {
                       placeholder={
                         emailProvider === "improvemx"
                           ? "career@yourdomain.com (alias)"
+                          : emailProvider === "resend"
+                          ? "verified@yourdomain.com"
                           : "Enter your email"
                       }
                       value={senderEmail}
@@ -443,7 +488,9 @@ export default function EmailCampaignTool() {
                     )}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="senderPassword">App Password</Label>
+                    <Label htmlFor="senderPassword">
+                      {emailProvider === "resend" ? "Resend API Key" : "App Password"}
+                    </Label>
                     <div className="relative">
                       <Input
                         id="senderPassword"
@@ -452,6 +499,8 @@ export default function EmailCampaignTool() {
                         placeholder={
                           emailProvider === "improvemx"
                             ? "Enter your SMTP password"
+                            : emailProvider === "resend"
+                            ? "Enter Resend API Key (re_...)"
                             : "Enter your app password"
                         }
                         value={senderPassword}
@@ -473,6 +522,18 @@ export default function EmailCampaignTool() {
                         )}
                       </Button>
                     </div>
+                    <div className="flex items-center space-x-2 pt-2">
+                      <Checkbox
+                        id="rememberMe"
+                        checked={rememberMe}
+                        onCheckedChange={(checked) =>
+                          setRememberMe(checked as boolean)
+                        }
+                      />
+                      <Label htmlFor="rememberMe" className="text-sm text-muted-foreground font-normal">
+                        Remember details for next time
+                      </Label>
+                    </div>
                   </div>
                 </div>
                 <AppPasswordInfo emailProvider={emailProvider} />
@@ -482,7 +543,7 @@ export default function EmailCampaignTool() {
                     id="emailProvider"
                     value={emailProvider}
                     onValueChange={(value) =>
-                      setEmailProvider(value as "gmail" | "outlook" | "improvemx")
+                      setEmailProvider(value as "gmail" | "outlook" | "improvemx" | "resend")
                     }
                   >
                     <div className="flex items-center space-x-2">
@@ -496,6 +557,10 @@ export default function EmailCampaignTool() {
                     <div className="flex items-center space-x-2">
                       <RadioGroupItem value="improvemx" id="improvemx" />
                       <Label htmlFor="improvemx">ImprovMX</Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="resend" id="resend" />
+                      <Label htmlFor="resend">Resend</Label>
                     </div>
                   </RadioGroup>
                 </div>

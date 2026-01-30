@@ -9,7 +9,7 @@ interface Recipient {
   email: string;
 }
 
-type EmailProvider = "gmail" | "outlook" | "improvemx";
+type EmailProvider = "gmail" | "outlook" | "improvemx" | "resend";
 
 type SendEmailsBody = {
   senderEmail: string;
@@ -26,7 +26,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isEmailProvider(value: unknown): value is EmailProvider {
-  return value === "gmail" || value === "outlook" || value === "improvemx";
+  return (
+    value === "gmail" ||
+    value === "outlook" ||
+    value === "improvemx" ||
+    value === "resend"
+  );
 }
 
 type ImageBlock = {
@@ -65,15 +70,37 @@ export async function POST(req: NextRequest) {
     useGreeting,
   } = (isRecord(body) ? (body as Partial<SendEmailsBody>) : {}) as Partial<SendEmailsBody>;
 
+  if (!isEmailProvider(emailProvider)) {
+    return NextResponse.json(
+      { error: "Invalid emailProvider. Expected 'gmail', 'outlook', 'improvemx', or 'resend'." },
+      { status: 400 }
+    );
+  }
+
   if (typeof senderEmail !== "string" || senderEmail.trim().length === 0) {
     return NextResponse.json(
       { error: "Missing senderEmail. Enter your SMTP username/email in the UI." },
       { status: 400 }
     );
   }
-  if (typeof senderPassword !== "string" || senderPassword.trim().length === 0) {
+  if (
+    emailProvider !== "resend" &&
+    (typeof senderPassword !== "string" || senderPassword.trim().length === 0)
+  ) {
     return NextResponse.json(
       { error: "Missing senderPassword. Enter your SMTP password (or app password) in the UI." },
+      { status: 400 }
+    );
+  }
+
+  // Resend requires either an env var or a user-provided API key
+  if (
+    emailProvider === "resend" &&
+    !process.env.RESEND_API_KEY &&
+    (!senderPassword || senderPassword.trim().length === 0)
+  ) {
+    return NextResponse.json(
+      { error: "Missing Resend API Key. Enter it in the UI or set RESEND_API_KEY in .env.local." },
       { status: 400 }
     );
   }
@@ -97,13 +124,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  if (!isEmailProvider(emailProvider)) {
-    return NextResponse.json(
-      { error: "Invalid emailProvider. Expected 'gmail', 'outlook', or 'improvemx'." },
-      { status: 400 }
-    );
-  }
-
   // Parse the Editor.js JSON data
   let editorData: OutputData;
   try {
@@ -119,6 +139,9 @@ export async function POST(req: NextRequest) {
   const htmlContent = convertToHtml(editorData);
   const textContent = convertToText(editorData);
 
+  const resolvedSenderEmail = senderEmail.trim();
+  const resolvedSenderPassword = senderPassword?.trim() ?? "";
+
   // Determine SMTP host based on email provider
   const host =
     emailProvider === "gmail"
@@ -127,11 +150,8 @@ export async function POST(req: NextRequest) {
       ? "smtp.office365.com"
       : "smtp.improvmx.com";
 
-  const resolvedSenderEmail = senderEmail.trim();
-  const resolvedSenderPassword = senderPassword.trim();
-
   const transporter = nodemailer.createTransport({
-    host: host,
+    host,
     port: 587,
     secure: false,
     requireTLS: true,
@@ -206,7 +226,57 @@ export async function POST(req: NextRequest) {
                 await delay(waitFor);
               }
               lastAttemptAt = Date.now();
-              await transporter.sendMail(mailOptions);
+              if (emailProvider === "resend") {
+                const resendPayload = {
+                  from: resolvedSenderEmail,
+                  to: [recipient.email],
+                  subject,
+                  html: mailOptions.html,
+                  text: mailOptions.text,
+                  reply_to: resolvedSenderEmail,
+                  attachments: attachments.length
+                    ? attachments.map((attachment) => ({
+                        filename: attachment.filename || "attachment",
+                        content: String(attachment.content),
+                      }))
+                    : undefined,
+                };
+
+                const resendResponse = await fetch("https://api.resend.com/emails", {
+                  method: "POST",
+                  headers: {
+                    Authorization: `Bearer ${resolvedSenderPassword || process.env.RESEND_API_KEY}`,
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify(resendPayload),
+                });
+
+                const resendBody = await resendResponse
+                  .json()
+                  .catch(() => null as unknown as { message?: string });
+
+                if (!resendResponse.ok) {
+                  const resendMessage =
+                    (resendBody as { message?: string })?.message ||
+                    `Resend API error (${resendResponse.status})`;
+                  throw new Error(resendMessage);
+                }
+              } else {
+                const info = await transporter.sendMail(mailOptions);
+                const normalizedRecipient = recipient.email.trim().toLowerCase();
+                const accepted = (Array.isArray(info.accepted) ? info.accepted : [])
+                  .map((value) => String(value).toLowerCase());
+                const rejected = (Array.isArray(info.rejected) ? info.rejected : [])
+                  .map((value) => String(value).toLowerCase());
+                const isRejected =
+                  rejected.includes(normalizedRecipient) ||
+                  (accepted.length > 0 && !accepted.includes(normalizedRecipient));
+
+                if (isRejected) {
+                  const responseText = info.response ? ` ${info.response}` : "";
+                  throw new Error(`SMTP rejected recipient.${responseText}`);
+                }
+              }
               sent += 1;
               success = true;
               // Send progress update

@@ -16,6 +16,9 @@ const geistMono = localFont({
 export const metadata: Metadata = {
   title: "Create Next App",
   description: "Local free email sender",
+  icons: {
+    icon: "/favicon.ico",
+  },
 };
 
 export default function RootLayout({

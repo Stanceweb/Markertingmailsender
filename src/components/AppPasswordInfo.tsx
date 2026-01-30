@@ -2,7 +2,7 @@ import React from "react";
 import { Info } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 
-type EmailProvider = "gmail" | "outlook" | "improvemx";
+type EmailProvider = "gmail" | "outlook" | "improvemx" | "resend";
 
 const AppPasswordInfo: React.FC<{ emailProvider: EmailProvider }> = ({
   emailProvider,
@@ -11,7 +11,16 @@ const AppPasswordInfo: React.FC<{ emailProvider: EmailProvider }> = ({
     <Alert>
       <Info className="h-4 w-4" />
       <AlertDescription>
-        {emailProvider === "improvemx" ? (
+        {emailProvider === "resend" ? (
+          <>
+            Use your Resend API Key.
+            <ol className="list-decimal list-inside mt-2">
+              <li>Create an API key in your Resend dashboard</li>
+              <li>Paste the API key (starts with <code>re_</code>) here</li>
+              <li>Ensure your sender email is a verified domain in Resend</li>
+            </ol>
+          </>
+        ) : emailProvider === "improvemx" ? (
           <>
             ImprovMX SMTP uses an SMTP username (your alias) and an SMTP password
             generated in ImprovMX.
