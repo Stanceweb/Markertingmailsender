@@ -2,7 +2,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import EditorJS from "@editorjs/editorjs";
+import type EditorJS from "@editorjs/editorjs";
 import { motion } from "framer-motion";
 import { Trash2, Eye, EyeOff, Upload, Send, Plus, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";

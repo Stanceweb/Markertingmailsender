@@ -162,7 +162,7 @@ export async function POST(req: NextRequest) {
   });
 
   const MAX_RETRIES = 3;
-  const MIN_INTERVAL_MS = 12000; // 5 emails per minute
+  const MIN_INTERVAL_MS = 60000; // 1 email per minute to prevent blockage
 
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
