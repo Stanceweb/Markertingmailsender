@@ -93,14 +93,13 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Resend requires either an env var or a user-provided API key
+  // Resend requires a user-provided API key (no env fallback)
   if (
     emailProvider === "resend" &&
-    !process.env.RESEND_API_KEY &&
     (!senderPassword || senderPassword.trim().length === 0)
   ) {
     return NextResponse.json(
-      { error: "Missing Resend API Key. Enter it in the UI or set RESEND_API_KEY in .env.local." },
+      { error: "Missing Resend API Key. Enter it in the UI." },
       { status: 400 }
     );
   }
@@ -162,9 +161,19 @@ export async function POST(req: NextRequest) {
   });
 
   const MAX_RETRIES = 3;
-  const MIN_INTERVAL_MS = 60000; // 1 email per minute to prevent blockage
+  const MIN_INTERVAL_MS = 50000;
+  const CONCURRENCY = 1;
+  const BATCH_DELAY_MS = 0;
 
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const parseRetryAfter = (value?: string | null) => {
+    if (!value) return 0;
+    const asInt = Number.parseInt(value, 10);
+    if (!Number.isNaN(asInt)) return asInt * 1000;
+    const asDate = Date.parse(value);
+    return Number.isNaN(asDate) ? 0 : Math.max(0, asDate - Date.now());
+  };
 
   // Create a ReadableStream to send progress
   const encoder = new TextEncoder();
@@ -177,55 +186,57 @@ export async function POST(req: NextRequest) {
         let failed = 0;
         const failedEmails: string[] = [];
 
+        const blocks = Array.isArray(editorData.blocks) ? editorData.blocks : [];
+        const attachments = blocks
+          .filter(isImageBlock)
+          .map((block): Attachment | null => {
+            const url = block.data?.file?.url;
+            if (typeof url !== "string" || !url.includes(",")) return null;
+            const base64 = url.split(",")[1];
+            if (!base64) return null;
+
+            const attachment: Attachment = {
+              filename: `image-${block.id}.png`,
+              content: base64,
+              encoding: "base64",
+              cid: block.id,
+            };
+            return attachment;
+          })
+          .filter((a): a is Attachment => a !== null);
+
         let lastAttemptAt = 0;
 
-        for (let i = 0; i < recipients.length; i++) {
-          const recipient = recipients[i];
-          const blocks = Array.isArray(editorData.blocks) ? editorData.blocks : [];
-          const attachments = blocks
-            .filter(isImageBlock)
-            .map((block): Attachment | null => {
-              const url = block.data?.file?.url;
-              if (typeof url !== "string" || !url.includes(",")) return null;
-              const base64 = url.split(",")[1];
-              if (!base64) return null;
+        const waitForRateLimit = async () => {
+          const now = Date.now();
+          const waitFor = Math.max(0, lastAttemptAt + MIN_INTERVAL_MS - now);
+          if (waitFor > 0) {
+            await delay(waitFor);
+          }
+          lastAttemptAt = Date.now();
+        };
 
-              const attachment: Attachment = {
-                filename: `image-${block.id}.png`,
-                content: base64,
-                encoding: "base64",
-                cid: block.id,
-              };
-              return attachment;
-            })
-            .filter((a): a is Attachment => a !== null);
-
-          const mailOptions = {
-            from: resolvedSenderEmail,
-            to: recipient.email,
-            subject,
-            replyTo: resolvedSenderEmail,
-            text: useGreeting
-              ? `Dear ${recipient.name},\n\n${textContent}`
-              : textContent,
-            html: useGreeting
-              ? `<p>Dear ${recipient.name},</p>${htmlContent}`
-              : htmlContent,
-            attachments,
-          };
-
+        const sendRecipient = async (recipient: Recipient) => {
           let attempt = 0;
-          let success = false;
           let errorMsg = "";
 
-          while (attempt < MAX_RETRIES && !success) {
+          while (attempt < MAX_RETRIES) {
             try {
-              const now = Date.now();
-              const waitFor = Math.max(0, lastAttemptAt + MIN_INTERVAL_MS - now);
-              if (waitFor > 0) {
-                await delay(waitFor);
-              }
-              lastAttemptAt = Date.now();
+              await waitForRateLimit();
+              const mailOptions = {
+                from: resolvedSenderEmail,
+                to: recipient.email,
+                subject,
+                replyTo: resolvedSenderEmail,
+                text: useGreeting
+                  ? `Dear ${recipient.name},\n\n${textContent}`
+                  : textContent,
+                html: useGreeting
+                  ? `<p>Dear ${recipient.name},</p>${htmlContent}`
+                  : htmlContent,
+                attachments,
+              };
+
               if (emailProvider === "resend") {
                 const resendPayload = {
                   from: resolvedSenderEmail,
@@ -245,21 +256,29 @@ export async function POST(req: NextRequest) {
                 const resendResponse = await fetch("https://api.resend.com/emails", {
                   method: "POST",
                   headers: {
-                    Authorization: `Bearer ${resolvedSenderPassword || process.env.RESEND_API_KEY}`,
+                    Authorization: `Bearer ${resolvedSenderPassword}`,
                     "Content-Type": "application/json",
                   },
                   body: JSON.stringify(resendPayload),
                 });
 
-                const resendBody = await resendResponse
-                  .json()
-                  .catch(() => null as unknown as { message?: string });
+                if (resendResponse.status === 429) {
+                  const retryAfterMs = parseRetryAfter(
+                    resendResponse.headers.get("retry-after")
+                  );
+                  const backoffMs = Math.min(30000, 1000 * 2 ** attempt);
+                  await delay(retryAfterMs || backoffMs);
+                  attempt += 1;
+                  continue;
+                }
 
                 if (!resendResponse.ok) {
-                  const resendMessage =
-                    (resendBody as { message?: string })?.message ||
-                    `Resend API error (${resendResponse.status})`;
-                  throw new Error(resendMessage);
+                  const resendBody = await resendResponse.text().catch(() => "");
+                  throw new Error(
+                    resendBody
+                      ? `Resend API error (${resendResponse.status}): ${resendBody}`
+                      : `Resend API error (${resendResponse.status})`
+                  );
                 }
               } else {
                 const info = await transporter.sendMail(mailOptions);
@@ -277,9 +296,8 @@ export async function POST(req: NextRequest) {
                   throw new Error(`SMTP rejected recipient.${responseText}`);
                 }
               }
+
               sent += 1;
-              success = true;
-              // Send progress update
               controller.enqueue(
                 encoder.encode(
                   JSON.stringify({
@@ -290,28 +308,37 @@ export async function POST(req: NextRequest) {
                   }) + "\n"
                 )
               );
+              return;
             } catch (error) {
               attempt += 1;
               errorMsg = (error as Error).message;
-              if (attempt >= MAX_RETRIES) {
-                failed += 1;
-                failedEmails.push(recipient.email);
-                // Send progress update
-                controller.enqueue(
-                  encoder.encode(
-                    JSON.stringify({
-                      status: "error",
-                      email: recipient.email,
-                      error: errorMsg,
-                      sent,
-                      total,
-                    }) + "\n"
-                  )
-                );
+              if (attempt < MAX_RETRIES) {
+                const backoffMs = Math.min(30000, 1000 * 2 ** (attempt - 1));
+                await delay(backoffMs);
               }
-              // Wait before retrying (also respects the global rate limit)
-              await delay(2000);
             }
+          }
+
+          failed += 1;
+          failedEmails.push(recipient.email);
+          controller.enqueue(
+            encoder.encode(
+              JSON.stringify({
+                status: "error",
+                email: recipient.email,
+                error: errorMsg,
+                sent,
+                total,
+              }) + "\n"
+            )
+          );
+        };
+
+        for (let i = 0; i < recipients.length; i += CONCURRENCY) {
+          const batch = recipients.slice(i, i + CONCURRENCY);
+          await Promise.all(batch.map((recipient) => sendRecipient(recipient)));
+          if (i + CONCURRENCY < recipients.length && BATCH_DELAY_MS > 0) {
+            await delay(BATCH_DELAY_MS);
           }
         }
 
