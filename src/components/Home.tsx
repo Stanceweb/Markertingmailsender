@@ -314,6 +314,19 @@ export default function EmailCampaignTool() {
     setSendStatusList([]);
 
     try {
+      let payloadText = text;
+      if (!payloadText.trim()) {
+        const editorContent = await editorRef.current?.save();
+        if (editorContent) {
+          payloadText = JSON.stringify(editorContent);
+          setText(payloadText);
+        }
+      }
+
+      if (!payloadText.trim()) {
+        throw new Error("Email content cannot be empty.");
+      }
+
       const trimmedSenderEmail = senderEmail.trim();
       const trimmedSenderPassword = senderPassword.trim();
       if (!trimmedSenderEmail) {
@@ -337,7 +350,7 @@ export default function EmailCampaignTool() {
           senderPassword: trimmedSenderPassword,
           recipients,
           subject,
-          text,
+          text: payloadText,
           emailProvider,
           useGreeting,
         }),
