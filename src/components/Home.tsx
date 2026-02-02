@@ -244,6 +244,66 @@ export default function EmailCampaignTool() {
     setRecipients(newRecipients);
   };
 
+  const extractEmails = (input: string) => {
+    if (!input) return [] as string[];
+    // normalize common separators to space
+    const normalized = input.replace(/[;,\n\r<>\t]+/g, " ");
+    // match emails
+    const matches = normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+    const seen = new Set<string>();
+    return matches
+      .map((email) => email.trim())
+      .filter((email) => {
+        const lower = email.toLowerCase();
+        if (seen.has(lower)) return false;
+        seen.add(lower);
+        return true;
+      });
+  };
+
+  const handleRecipientEmailPaste = (
+    index: number,
+    e: React.ClipboardEvent<HTMLInputElement>
+  ) => {
+    const pastedText = e.clipboardData.getData("text");
+    const emails = extractEmails(pastedText);
+
+    if (emails.length <= 1) {
+      return; // let normal paste proceed for single email
+    }
+
+    e.preventDefault();
+
+    setRecipients((prev) => {
+      const existing = new Set(prev.map((r) => r.email.toLowerCase()).filter(Boolean));
+      const newEmails = emails.filter((em) => !existing.has(em.toLowerCase()));
+      if (newEmails.length === 0) {
+        // nothing to add
+        return prev;
+      }
+
+      const before = prev.slice(0, index);
+      const after = prev.slice(index + 1);
+      const currentName = prev[index]?.name ?? "";
+
+      const nextRecipients = newEmails.map((email, emailIndex) => ({
+        name: emailIndex === 0 ? currentName : "",
+        email,
+      }));
+
+      const result = [...before, ...nextRecipients, ...after];
+
+      // after updating state, focus the last inserted email input (best effort)
+      setTimeout(() => {
+        const lastIndex = before.length + nextRecipients.length - 1;
+        const el = document.getElementById(`recipient-email-${lastIndex}`) as HTMLInputElement | null;
+        el?.focus();
+      }, 50);
+
+      return result;
+    });
+  };
+
   const addRecipient = () => {
     setRecipients([...recipients, { name: "", email: "" }]);
   };
@@ -643,6 +703,7 @@ export default function EmailCampaignTool() {
                         placeholder="Recipient Email"
                         value={recipient.email}
                         onChange={(e) => handleRecipientChange(index, e)}
+                        onPaste={(e) => handleRecipientEmailPaste(index, e)}
                         required
                         autoComplete="email"
                         list="recipientEmailHistory"
