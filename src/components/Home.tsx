@@ -617,7 +617,6 @@ export default function EmailCampaignTool() {
                         placeholder="Recipient Name"
                         value={recipient.name}
                         onChange={(e) => handleRecipientChange(index, e)}
-                        required
                         autoComplete="name"
                         list="recipientNameHistory"
                       />
