@@ -348,18 +348,18 @@ export default function EmailCampaignTool() {
   };
 
   const resetForm = () => {
-    setSenderEmail("");
-    setSenderPassword("");
-    setSubject("");
-    setText("");
-    setRecipients([{ name: "", email: "" }]);
+    // Only reset recipient names and emails. Keep sender, subject, and editor content intact.
+    setRecipients((prev) => {
+      if (!Array.isArray(prev) || prev.length === 0) return [{ name: "", email: "" }];
+      return prev.map(() => ({ name: "", email: "" }));
+    });
+    // Reset progress/stats and status list
     setProgress(0);
     setSentCount(0);
     setFailedCount(0);
     setTotalCount(0);
     setFailedEmails([]);
     setSendStatusList([]);
-    editorRef.current?.clear();
   };
 
   const sendEmails = async (e: React.FormEvent<HTMLFormElement>) => {
