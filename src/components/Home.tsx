@@ -407,6 +407,36 @@ export default function EmailCampaignTool() {
       // and respect the user's spam-prevention interval requirement.
       const MIN_INTERVAL_MS = 50000;
 
+      const FETCH_TIMEOUT_MS = 15000; // per-request timeout
+      const MAX_FETCH_RETRIES = 3;
+
+      const fetchWithTimeoutAndRetries = async (
+        url: string,
+        options: RequestInit,
+        timeoutMs = FETCH_TIMEOUT_MS,
+        maxRetries = MAX_FETCH_RETRIES
+      ) => {
+        let attempt = 0;
+        let lastError: unknown = null;
+        while (attempt < maxRetries) {
+          const controller = new AbortController();
+          const id = setTimeout(() => controller.abort(), timeoutMs);
+          try {
+            const resp = await fetch(url, { ...options, signal: controller.signal });
+            clearTimeout(id);
+            return resp;
+          } catch (err) {
+            clearTimeout(id);
+            lastError = err;
+            attempt += 1;
+            const backoff = Math.min(30000, 500 * 2 ** attempt);
+            // small delay before retrying
+            await new Promise((res) => setTimeout(res, backoff));
+          }
+        }
+        throw lastError;
+      };
+
       for (let i = 0; i < recipients.length; i++) {
         // First email goes immediately (i=0). Subsequent ones wait 50s.
         if (i > 0) {
@@ -421,7 +451,7 @@ export default function EmailCampaignTool() {
         const batch = [recipients[i]];
         
         try {
-          const response = await fetch("/api/sendEmails", {
+          const response = await fetchWithTimeoutAndRetries("/api/sendEmails", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
@@ -435,7 +465,7 @@ export default function EmailCampaignTool() {
               emailProvider,
               useGreeting,
             }),
-          });
+          }, FETCH_TIMEOUT_MS, MAX_FETCH_RETRIES);
   
           if (!response.ok) {
             let serverMessage = response.statusText;
