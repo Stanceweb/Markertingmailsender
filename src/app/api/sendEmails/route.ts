@@ -161,9 +161,10 @@ export async function POST(req: NextRequest) {
   });
 
   const MAX_RETRIES = 3;
-  const MIN_INTERVAL_MS = 50000;
-  const CONCURRENCY = 1;
-  const BATCH_DELAY_MS = 0;
+  // Previously we used MIN_INTERVAL_MS here, but now throttling is handled by the client
+  // to prevent Vercel Function timeouts. We just process whatever batch we receive immediately.
+  const CONCURRENCY = 5; 
+  const BATCH_DELAY_MS = 100;
 
   const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -205,24 +206,16 @@ export async function POST(req: NextRequest) {
           })
           .filter((a): a is Attachment => a !== null);
 
-        let lastAttemptAt = 0;
-
-        const waitForRateLimit = async () => {
-          const now = Date.now();
-          const waitFor = Math.max(0, lastAttemptAt + MIN_INTERVAL_MS - now);
-          if (waitFor > 0) {
-            await delay(waitFor);
-          }
-          lastAttemptAt = Date.now();
-        };
-
+        // We removed server-side rate-limit loop here. Client orchestrates the 50s spacing.
+        // We still support basic concurrency control within the received batch.
+        
         const sendRecipient = async (recipient: Recipient) => {
           let attempt = 0;
           let errorMsg = "";
 
           while (attempt < MAX_RETRIES) {
             try {
-              await waitForRateLimit();
+              // No manual wait here - client orchestrates the 50s spacing
               const mailOptions = {
                 from: resolvedSenderEmail,
                 to: recipient.email,

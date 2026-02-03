@@ -400,116 +400,149 @@ export default function EmailCampaignTool() {
         );
       }
 
-      const response = await fetch("/api/sendEmails", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          senderEmail: trimmedSenderEmail,
-          senderPassword: trimmedSenderPassword,
-          recipients,
-          subject,
-          text: payloadText,
-          emailProvider,
-          useGreeting,
-        }),
-      });
+      const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      
+      // Client-side throttling: Send recipients one by one (or in small batches) 
+      // with a 50s delay between them to stay within Vercel's execution limits
+      // and respect the user's spam-prevention interval requirement.
+      const MIN_INTERVAL_MS = 50000;
 
-      if (!response.ok) {
-        let serverMessage = response.statusText;
+      for (let i = 0; i < recipients.length; i++) {
+        // First email goes immediately (i=0). Subsequent ones wait 50s.
+        if (i > 0) {
+          // You could show a specialized "Waiting..." status here if you wanted
+          await delay(MIN_INTERVAL_MS);
+        }
+        
+        // If the user cancelled or navigated away, we can't easily stop strict loop 
+        // without an AbortController, but `isSending` state check would require ref setup.
+        // For now, checks are implicit by component mounting.
+
+        const batch = [recipients[i]];
+        
         try {
-          const data = await response.json();
-          serverMessage = data?.error || data?.message || serverMessage;
-        } catch {
-          // ignore JSON parse failures
-        }
-        throw new Error(serverMessage || `Request failed (${response.status})`);
-      }
-
-      if (!response.body) {
-        throw new Error("No response body");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let done = false;
-
-      while (!done) {
-        const { value, done: doneReading } = await reader.read();
-        done = doneReading;
-        if (value) {
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split("\n").filter((line) => line.trim() !== "");
-          lines.forEach((line) => {
-            try {
-              const data = JSON.parse(line);
-              if (data.status === "success") {
-                setSentCount((prev) => prev + 1);
-                setSendStatusList((prev) => {
-                  const next = [...prev];
-                  const existingIndex = next.findIndex(
-                    (item) => item.email === data.email
-                  );
-                  const entry = { email: data.email, status: "success" as const };
-                  if (existingIndex >= 0) {
-                    next[existingIndex] = entry;
-                  } else {
-                    next.push(entry);
-                  }
-                  return next;
-                });
-                toast.success(`Email sent to ${data.email}`);
-              } else if (data.status === "error") {
-                setFailedCount((prev) => prev + 1);
-                setFailedEmails((prev) => [...prev, data.email]);
-                setSendStatusList((prev) => {
-                  const next = [...prev];
-                  const existingIndex = next.findIndex(
-                    (item) => item.email === data.email
-                  );
-                  const entry = { email: data.email, status: "error" as const };
-                  if (existingIndex >= 0) {
-                    next[existingIndex] = entry;
-                  } else {
-                    next.push(entry);
-                  }
-                  return next;
-                });
-                toast.error(`Failed to send to ${data.email}: ${data.error}`);
-              } else if (data.status === "complete") {
-                setProgress(100);
-                pushHistory(HISTORY_KEYS.senderEmail, trimmedSenderEmail, setSenderEmailHistory);
-                pushHistory(HISTORY_KEYS.subject, subject, setSubjectHistory);
-                recipients.forEach((recipient) => {
-                  pushHistory(HISTORY_KEYS.recipientName, recipient.name, setRecipientNameHistory);
-                  pushHistory(HISTORY_KEYS.recipientEmail, recipient.email, setRecipientEmailHistory);
-                });
-                toast.success(
-                  `Sent ${data.sent} emails successfully. Failed: ${data.failed}`
-                );
-                if (data.failed > 0) {
-                  toast.error(
-                    `Failed to send emails to: ${data.failedEmails.join(", ")}`
-                  );
-                }
-              }
-
-              if (typeof data.sent === "number" && typeof data.total === "number") {
-                setProgress(data.total > 0 ? (data.sent / data.total) * 100 : 100);
-              } else if (
-                typeof data.sent === "number" &&
-                typeof data.failed === "number" &&
-                totalCount > 0
-              ) {
-                setProgress(((data.sent + data.failed) / totalCount) * 100);
-              }
-            } catch (err) {
-              console.error("Error parsing line:", err);
-            }
+          const response = await fetch("/api/sendEmails", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              senderEmail: trimmedSenderEmail,
+              senderPassword: trimmedSenderPassword,
+              recipients: batch,
+              subject,
+              text: payloadText,
+              emailProvider,
+              useGreeting,
+            }),
           });
+  
+          if (!response.ok) {
+            let serverMessage = response.statusText;
+            try {
+              const data = await response.json();
+              serverMessage = data?.error || data?.message || serverMessage;
+            } catch {
+              // ignore JSON parse failures
+            }
+            // Mark this specific recipient as error but continue the loop
+            setFailedCount((prev) => prev + 1);
+            setFailedEmails((prev) => [...prev, batch[0].email]);
+            setSendStatusList((prev) => [
+              ...prev, 
+              { email: batch[0].email, status: "error" }
+            ]);
+            // toast.error(`Error sending to ${batch[0].email}: ${serverMessage}`);
+            continue; // Continue to next recipient
+          }
+  
+          if (!response.body) {
+            throw new Error("No response body");
+          }
+  
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let done = false;
+  
+          while (!done) {
+            const { value, done: doneReading } = await reader.read();
+            done = doneReading;
+            if (value) {
+              const chunk = decoder.decode(value, { stream: true });
+              const lines = chunk.split("\n").filter((line) => line.trim() !== "");
+              lines.forEach((line) => {
+                try {
+                  const data = JSON.parse(line);
+                  if (data.status === "success") {
+                    setSentCount((prev) => prev + 1);
+                    setSendStatusList((prev) => {
+                      const next = [...prev];
+                      const existingIndex = next.findIndex(
+                        (item) => item.email === data.email
+                      );
+                      const entry = { email: data.email, status: "success" as const };
+                      if (existingIndex >= 0) {
+                        next[existingIndex] = entry;
+                      } else {
+                        next.push(entry);
+                      }
+                      return next;
+                    });
+                    toast.success(`Email sent to ${data.email}`);
+                  } else if (data.status === "error") {
+                    setFailedCount((prev) => prev + 1);
+                    setFailedEmails((prev) => [...prev, data.email]);
+                    setSendStatusList((prev) => {
+                      const next = [...prev];
+                      const existingIndex = next.findIndex(
+                        (item) => item.email === data.email
+                      );
+                      const entry = { email: data.email, status: "error" as const };
+                      if (existingIndex >= 0) {
+                        next[existingIndex] = entry;
+                      } else {
+                        next.push(entry);
+                      }
+                      return next;
+                    });
+                    // toast.error(`Failed to send to ${data.email}: ${data.error}`);
+                  }
+                  
+                  // Update progress bar based on overall loop progress + batch results
+                  // (We calculate total progress manually since we are looping)
+                  // const currentTotalSent = sentCount + failedCount; 
+                  // setProgress((currentTotalSent / totalCount) * 100);
+                  // Actually, just rely on state updates which might lag slightly, or simpler:
+                  // We can update progress at bottom of loop.
+                } catch (err) {
+                  console.error("Error parsing line:", err);
+                }
+              });
+            }
+          }
+        } catch (error) {
+           // Network error or other fetch error
+           console.error("Fetch error for recipient", batch[0].email, error);
+           setFailedCount((prev) => prev + 1);
+           setFailedEmails((prev) => [...prev, batch[0].email]);
+           setSendStatusList((prev) => [...prev, { email: batch[0].email, status: "error" }]);
+           toast.error(`Network error sending to ${batch[0].email}`);
         }
-      }
+        
+        // Update progress manually after each iteration
+        // Note: sentCount/failedCount are async state updates, so using i + 1 is safer for immediate bar update
+        setProgress(((i + 1) / recipients.length) * 100);
+      } // end for loop
+
+      // Final wrap up
+      pushHistory(HISTORY_KEYS.senderEmail, trimmedSenderEmail, setSenderEmailHistory);
+      pushHistory(HISTORY_KEYS.subject, subject, setSubjectHistory);
+      recipients.forEach((recipient) => {
+        pushHistory(HISTORY_KEYS.recipientName, recipient.name, setRecipientNameHistory);
+        pushHistory(HISTORY_KEYS.recipientEmail, recipient.email, setRecipientEmailHistory);
+      });
+      // toast.success(`Campaign finished.`);
+
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
